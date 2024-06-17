@@ -28,7 +28,7 @@ MODULE_DESCRIPTION("A device that simulates interrupts");
 static int delay = 100; /* time (in ms) to generate an event */
 
 /* Data produced by the simulated device */
-static int simrupt_data;
+static int simrupt_data = -1;
 
 /* Timer to simulate a periodic IRQ */
 static struct timer_list timer;
@@ -37,6 +37,42 @@ static struct timer_list timer;
 static int major;
 static struct class *simrupt_class;
 static struct cdev simrupt_cdev;
+
+/*draw game board*/
+#define BOARD_SIZE 4
+#define ROWS (BOARD_SIZE * 2)
+#define COLS (BOARD_SIZE * 2 + 2)
+static char chess[ROWS * COLS + 1];
+
+/*initialize chessboard*/
+static void init_board(void)
+{
+    int index = 0;
+    for (int i = 0; i < BOARD_SIZE * 2; i++) {
+        if (i % 2 == 0) {
+            for (int j = 0; j < BOARD_SIZE; j++) {
+                chess[index++] = '|';
+                chess[index++] = ' ';
+            }
+            chess[index++] = '|';
+            chess[index++] = '\n';
+        } else {
+            for (int j = 0; j < BOARD_SIZE * 2 + 1; j++) {
+                chess[index++] = '-';
+            }
+            chess[index++] = '\n';
+        }
+    }
+    chess[index] = '\n';
+}
+
+static void update_board(int val, const char *table)
+{
+    int row = val / BOARD_SIZE;
+    int col = val % BOARD_SIZE;
+    int index = 20 * row + (2 * (col + 1) - 1);
+    chess[index] = 'O';
+}
 
 /* Data are stored into a kfifo buffer before passing them to the userspace */
 static DECLARE_KFIFO_PTR(rx_fifo, unsigned char);
@@ -53,7 +89,7 @@ static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
 /* Generate new data from the simulated device */
 static inline int update_simrupt_data(void)
 {
-    simrupt_data = max((simrupt_data + 1) % 0x7f, 0x20);
+    simrupt_data = max((simrupt_data + 1) % 16, 0);
     return simrupt_data;
 }
 
@@ -63,7 +99,10 @@ static void produce_data(unsigned char val)
     /* Implement a kind of circular FIFO here (skip oldest element if kfifo
      * buffer is full).
      */
-    unsigned int len = kfifo_in(&rx_fifo, &val, sizeof(val));
+    if (!val)
+        init_board();
+    update_board(val, chess);
+    unsigned int len = kfifo_in(&rx_fifo, chess, sizeof(chess));
     if (unlikely(len < sizeof(val)) && printk_ratelimit())
         pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(val) - len);
 
@@ -311,7 +350,7 @@ static int simrupt_release(struct inode *inode, struct file *filp)
 static const struct file_operations simrupt_fops = {
     .read = simrupt_read,
     .llseek = no_llseek,
-    .open = simrupt_open,
+    .open = simrupt_open,  // cat /dev/simrupt
     .release = simrupt_release,
     .owner = THIS_MODULE,
 };
@@ -371,6 +410,9 @@ static int __init simrupt_init(void)
         ret = -ENOMEM;
         goto error_cdev;
     }
+
+    /*Setup the chessboard*/
+    init_board();
 
     /* Setup the timer */
     timer_setup(&timer, timer_handler, 0);
