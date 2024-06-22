@@ -1,5 +1,6 @@
-NAME = simrupt
-obj-m := $(NAME).o
+NAME = ttt
+obj-m := $(NAME).o 
+ttt-objs := simrupt.o mcts.o game.o negamax.o zobrist.o mt19937-64.o 
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)

@@ -4,11 +4,16 @@
 #include <linux/circ_buf.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/kernel.h>
 #include <linux/kfifo.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/version.h>
 #include <linux/workqueue.h>
+
+#include "game.h"
+#include "mcts.h"
+#include "negamax.h"
 
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
@@ -28,7 +33,7 @@ MODULE_DESCRIPTION("A device that simulates interrupts");
 static int delay = 100; /* time (in ms) to generate an event */
 
 /* Data produced by the simulated device */
-static int simrupt_data = -1;
+// static int simrupt_data = -1;
 
 /* Timer to simulate a periodic IRQ */
 static struct timer_list timer;
@@ -39,10 +44,11 @@ static struct class *simrupt_class;
 static struct cdev simrupt_cdev;
 
 /*draw game board*/
-#define BOARD_SIZE 4
 #define ROWS (BOARD_SIZE * 2)
 #define COLS (BOARD_SIZE * 2 + 2)
 static char chess[ROWS * COLS + 1];
+static char table[N_GRIDS];  // record 'O' and 'X'
+static char turn = 'X';
 
 /*initialize chessboard*/
 static void init_board(void)
@@ -71,7 +77,8 @@ static void update_board(int val, const char *table)
     int row = val / BOARD_SIZE;
     int col = val % BOARD_SIZE;
     int index = 20 * row + (2 * (col + 1) - 1);
-    chess[index] = 'O';
+    chess[index] = turn;
+    smp_wmb();
 }
 
 /* Data are stored into a kfifo buffer before passing them to the userspace */
@@ -89,8 +96,23 @@ static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
 /* Generate new data from the simulated device */
 static inline int update_simrupt_data(void)
 {
-    simrupt_data = max((simrupt_data + 1) % 16, 0);
-    return simrupt_data;
+    char ai = 'O';
+    int move;
+
+    if (turn == ai) {
+        move = mcts(table, ai);
+        smp_wmb();
+        if (move != -1)
+            table[move] = ai;
+    } else {
+        move = negamax_predict(table, turn).move;
+        smp_wmb();
+        if (move != -1)
+            table[move] = turn;
+    }
+    turn = turn == 'X' ? 'O' : 'X';
+
+    return move;
 }
 
 /* Insert a value into the kfifo buffer */
@@ -99,10 +121,18 @@ static void produce_data(unsigned char val)
     /* Implement a kind of circular FIFO here (skip oldest element if kfifo
      * buffer is full).
      */
-    if (!val)
+    char win = check_win(table);
+    unsigned int len;
+    if (win != ' ') {
         init_board();
-    update_board(val, chess);
-    unsigned int len = kfifo_in(&rx_fifo, chess, sizeof(chess));
+        smp_wmb();
+        turn = 'X';
+        len = kfifo_in(&rx_fifo, chess, sizeof(chess));
+    } else {
+        update_board(val, chess);
+        len = kfifo_in(&rx_fifo, chess, sizeof(chess));
+    }
+
     if (unlikely(len < sizeof(val)) && printk_ratelimit())
         pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(val) - len);
 
@@ -413,6 +443,7 @@ static int __init simrupt_init(void)
 
     /*Setup the chessboard*/
     init_board();
+    negamax_init();
 
     /* Setup the timer */
     timer_setup(&timer, timer_handler, 0);
