@@ -13,7 +13,7 @@
 
 #include "game.h"
 #include "mcts.h"
-#include "negamax.h"
+// #include "negamax.h"
 
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
@@ -48,7 +48,7 @@ static struct cdev simrupt_cdev;
 #define COLS (BOARD_SIZE * 2 + 2)
 static char chess[ROWS * COLS + 1];
 static char table[N_GRIDS];  // record 'O' and 'X'
-static char turn = 'X';
+static char turn;
 
 /*initialize chessboard*/
 static void init_board(void)
@@ -96,21 +96,27 @@ static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
 /* Generate new data from the simulated device */
 static inline int update_simrupt_data(void)
 {
-    char ai = 'O';
-    int move;
+    // char ai = 'O';
+    // int move;
 
-    if (turn == ai) {
-        move = mcts(table, ai);
-        smp_wmb();
-        if (move != -1)
-            table[move] = ai;
-    } else {
-        move = negamax_predict(table, turn).move;
-        smp_wmb();
-        if (move != -1)
-            table[move] = turn;
-    }
-    turn = turn == 'X' ? 'O' : 'X';
+    // if (turn == ai) {
+    //     move = mcts(table, ai);
+    //     smp_wmb();
+    //     if (move != -1)
+    //         table[move] = ai;
+    // } else {
+    //     move = negamax_predict(table, turn).move;
+    //     smp_wmb();
+    //     if (move != -1)
+    //         table[move] = turn;
+    // }
+
+    pr_info("simrupt: [CPU#%d] is turn %c to play chess\n", smp_processor_id(),
+            turn);
+    int move = mcts(table, turn);
+    smp_wmb();
+    if (move != -1)
+        table[move] = turn;
 
     return move;
 }
@@ -124,12 +130,16 @@ static void produce_data(unsigned char val)
     char win = check_win(table);
     unsigned int len;
     if (win != ' ') {
-        init_board();
-        smp_wmb();
+        update_board(val, chess);
         turn = 'X';
         len = kfifo_in(&rx_fifo, chess, sizeof(chess));
+        init_board();
+        smp_wmb();
+        memset(table, ' ', N_GRIDS);
+        smp_wmb();
     } else {
         update_board(val, chess);
+        turn = turn == 'X' ? 'O' : 'X';
         len = kfifo_in(&rx_fifo, chess, sizeof(chess));
     }
 
@@ -357,8 +367,10 @@ static atomic_t open_cnt;
 static int simrupt_open(struct inode *inode, struct file *filp)
 {
     pr_debug("simrupt: %s\n", __func__);
-    if (atomic_inc_return(&open_cnt) == 1)
+    if (atomic_inc_return(&open_cnt) == 1) {
         mod_timer(&timer, jiffies + msecs_to_jiffies(delay));
+        pr_info("tic-tac-toe game start!\n");
+    }
     pr_info("openm current cnt: %d\n", atomic_read(&open_cnt));
 
     return 0;
@@ -443,7 +455,9 @@ static int __init simrupt_init(void)
 
     /*Setup the chessboard*/
     init_board();
-    negamax_init();
+    // negamax_init();
+    memset(table, ' ', N_GRIDS);
+    turn = 'X';
 
     /* Setup the timer */
     timer_setup(&timer, timer_handler, 0);
