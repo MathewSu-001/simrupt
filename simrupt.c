@@ -13,7 +13,7 @@
 
 #include "game.h"
 #include "mcts.h"
-// #include "negamax.h"
+#include "negamax.h"
 
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
@@ -96,27 +96,23 @@ static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
 /* Generate new data from the simulated device */
 static inline int update_simrupt_data(void)
 {
-    // char ai = 'O';
-    // int move;
+    char ai = 'O';
+    int move;
 
-    // if (turn == ai) {
-    //     move = mcts(table, ai);
-    //     smp_wmb();
-    //     if (move != -1)
-    //         table[move] = ai;
-    // } else {
-    //     move = negamax_predict(table, turn).move;
-    //     smp_wmb();
-    //     if (move != -1)
-    //         table[move] = turn;
-    // }
+    if (turn == ai) {
+        move = mcts(table, ai);
+        smp_wmb();
+        if (move != -1)
+            table[move] = ai;
+    } else {
+        move = negamax_predict(table, turn).move;
+        smp_wmb();
+        if (move != -1)
+            table[move] = turn;
+    }
 
     pr_info("simrupt: [CPU#%d] is turn %c to play chess\n", smp_processor_id(),
             turn);
-    int move = mcts(table, turn);
-    smp_wmb();
-    if (move != -1)
-        table[move] = turn;
 
     return move;
 }
@@ -455,7 +451,7 @@ static int __init simrupt_init(void)
 
     /*Setup the chessboard*/
     init_board();
-    // negamax_init();
+    negamax_init();
     memset(table, ' ', N_GRIDS);
     turn = 'X';
 

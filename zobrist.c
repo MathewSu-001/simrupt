@@ -2,10 +2,10 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
-#include "mt19937-64.h"
+#include "xoroshiro128.h"
 #include "zobrist.h"
 
-uint64_t zobrist_table[N_GRIDS][2];
+u64 zobrist_table[N_GRIDS][2];
 
 #define HASH(key) ((key) % HASH_TABLE_SIZE)
 
@@ -14,18 +14,23 @@ static struct hlist_head *hash_table;
 void zobrist_init(void)
 {
     int i;
+    xoro_init();
     for (i = 0; i < N_GRIDS; i++) {
-        zobrist_table[i][0] = mt19937_rand();
-        zobrist_table[i][1] = mt19937_rand();
+        zobrist_table[i][0] = xoro_next();
+        zobrist_table[i][1] = xoro_next();
+        jump();
     }
     hash_table =
         kmalloc(sizeof(struct hlist_head) * HASH_TABLE_SIZE, GFP_KERNEL);
-    // assert(hash_table);
+    if (!hash_table) {
+        pr_info("simrupt: Failed to allocate space for hash_table\n");
+        return;
+    }
     for (i = 0; i < HASH_TABLE_SIZE; i++)
         INIT_HLIST_HEAD(&hash_table[i]);
 }
 
-zobrist_entry_t *zobrist_get(uint64_t key)
+zobrist_entry_t *zobrist_get(u64 key)
 {
     unsigned long long hash_key = HASH(key);
 
@@ -43,7 +48,7 @@ zobrist_entry_t *zobrist_get(uint64_t key)
     return NULL;
 }
 
-void zobrist_put(uint64_t key, int score, int move)
+void zobrist_put(u64 key, int score, int move)
 {
     unsigned long long hash_key = HASH(key);
     zobrist_entry_t *new_entry = kmalloc(sizeof(zobrist_entry_t), GFP_KERNEL);

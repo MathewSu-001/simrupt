@@ -15,7 +15,7 @@
 static int history_score_sum[N_GRIDS];
 static int history_count[N_GRIDS];
 
-static uint64_t hash_value;
+static u64 hash_value;
 
 static int cmp_moves(const void *a, const void *b)
 {

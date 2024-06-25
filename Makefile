@@ -1,6 +1,6 @@
 NAME = ttt
 obj-m := $(NAME).o 
-ttt-objs := simrupt.o mcts.o game.o negamax.o zobrist.o mt19937-64.o 
+ttt-objs := simrupt.o mcts.o game.o negamax.o zobrist.o xoroshiro128.o 
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
