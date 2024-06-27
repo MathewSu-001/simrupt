@@ -93,29 +93,6 @@ static DEFINE_MUTEX(read_lock);
 /* Wait queue to implement blocking I/O from userspace */
 static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
 
-/* Generate new data from the simulated device */
-static inline int update_simrupt_data(void)
-{
-    char ai = 'O';
-    int move;
-
-    if (turn == ai) {
-        move = mcts(table, ai);
-        smp_wmb();
-        if (move != -1)
-            table[move] = ai;
-    } else {
-        move = negamax_predict(table, turn).move;
-        smp_wmb();
-        if (move != -1)
-            table[move] = turn;
-    }
-
-    pr_info("simrupt: [CPU#%d] is turn %c to play chess\n", smp_processor_id(),
-            turn);
-
-    return move;
-}
 
 /* Insert a value into the kfifo buffer */
 static void produce_data(unsigned char val)
@@ -127,6 +104,7 @@ static void produce_data(unsigned char val)
     unsigned int len;
     if (win != ' ') {
         update_board(val, chess);
+        pr_info("simrupt: %c win !!!\n", turn);
         turn = 'X';
         len = kfifo_in(&rx_fifo, chess, sizeof(chess));
         init_board();
@@ -159,54 +137,6 @@ static DEFINE_MUTEX(consumer_lock);
  */
 static struct circ_buf fast_buf;
 
-static int fast_buf_get(void)
-{
-    struct circ_buf *ring = &fast_buf;
-
-    /* prevent the compiler from merging or refetching accesses for tail */
-    unsigned long head = READ_ONCE(ring->head), tail = ring->tail;
-    int ret;
-
-    if (unlikely(!CIRC_CNT(head, tail, PAGE_SIZE)))
-        return -ENOENT;
-
-    /* read index before reading contents at that index */
-    smp_rmb();
-
-    /* extract item from the buffer */
-    ret = ring->buf[tail];
-
-    /* finish reading descriptor before incrementing tail */
-    smp_mb();
-
-    /* increment the tail pointer */
-    ring->tail = (tail + 1) & (PAGE_SIZE - 1);
-
-    return ret;
-}
-
-static int fast_buf_put(unsigned char val)
-{
-    struct circ_buf *ring = &fast_buf;
-    unsigned long head = ring->head;
-
-    /* prevent the compiler from merging or refetching accesses for tail */
-    unsigned long tail = READ_ONCE(ring->tail);
-
-    /* is circular buffer full? */
-    if (unlikely(!CIRC_SPACE(head, tail, PAGE_SIZE)))
-        return -ENOMEM;
-
-    ring->buf[ring->head] = val;
-
-    /* commit the item before incrementing the head */
-    smp_wmb();
-
-    /* update header pointer */
-    ring->head = (ring->head + 1) & (PAGE_SIZE - 1);
-
-    return 0;
-}
 
 /* Clear all data from the circular buffer fast_buf */
 static void fast_buf_clear(void)
@@ -214,10 +144,45 @@ static void fast_buf_clear(void)
     fast_buf.head = fast_buf.tail = 0;
 }
 
-/* Workqueue handler: executed by a kernel thread */
-static void simrupt_work_func(struct work_struct *w)
+static void ai_func1(struct work_struct *w)
 {
-    int val, cpu;
+    int move, cpu;
+
+    /* This code runs from a kernel thread, so softirqs and hard-irqs must
+     * be enabled.
+     */
+    WARN_ON_ONCE(in_softirq());
+    WARN_ON_ONCE(in_interrupt());
+
+    /* Pretend to simulate access to per-CPU data, disabling preemption
+     * during the pr_info().
+     */
+    // struct cpumask mask;
+
+    // cpumask_clear(&mask);
+    // cpumask_set_cpu(cpu_id, &mask);
+    // set_cpus_allowed_ptr(current, &mask);
+    cpu = get_cpu();
+    put_cpu();
+
+    pr_info("simrupt: [CPU#%d] is turn %s to play chess\n", cpu, __func__);
+
+    move = mcts(table, turn);
+    smp_wmb();
+    if (move != -1)
+        table[move] = turn;
+
+    /* Store data to the kfifo buffer */
+    mutex_lock(&producer_lock);
+    produce_data(move);
+    mutex_unlock(&producer_lock);
+
+    wake_up_interruptible(&rx_wait);
+}
+
+static void ai_func2(struct work_struct *w)
+{
+    int move, cpu;
 
     /* This code runs from a kernel thread, so softirqs and hard-irqs must
      * be enabled.
@@ -229,23 +194,20 @@ static void simrupt_work_func(struct work_struct *w)
      * during the pr_info().
      */
     cpu = get_cpu();
-    pr_info("simrupt: [CPU#%d] %s\n", cpu, __func__);
     put_cpu();
 
-    while (1) {
-        /* Consume data from the circular buffer */
-        mutex_lock(&consumer_lock);
-        val = fast_buf_get();
-        mutex_unlock(&consumer_lock);
+    pr_info("simrupt: [CPU#%d] is turn %s to play chess\n", cpu, __func__);
 
-        if (val < 0)
-            break;
+    move = negamax_predict(table, turn).move;
+    smp_wmb();
+    if (move != -1)
+        table[move] = turn;
 
-        /* Store data to the kfifo buffer */
-        mutex_lock(&producer_lock);
-        produce_data(val);
-        mutex_unlock(&producer_lock);
-    }
+    /* Store data to the kfifo buffer */
+    mutex_lock(&producer_lock);
+    produce_data(move);
+    mutex_unlock(&producer_lock);
+
     wake_up_interruptible(&rx_wait);
 }
 
@@ -255,7 +217,10 @@ static struct workqueue_struct *simrupt_workqueue;
 /* Work item: holds a pointer to the function that is going to be executed
  * asynchronously.
  */
-static DECLARE_WORK(work, simrupt_work_func);
+// static DECLARE_WORK(work, simrupt_work_func);
+static DECLARE_WORK(ai_work1, ai_func1);
+static DECLARE_WORK(ai_work2, ai_func2);
+
 
 /* Tasklet handler.
  *
@@ -272,7 +237,11 @@ static void simrupt_tasklet_func(unsigned long __data)
     WARN_ON_ONCE(!in_softirq());
 
     tv_start = ktime_get();
-    queue_work(simrupt_workqueue, &work);
+    // queue_work(simrupt_workqueue, &work);
+    if (turn == 'X')
+        queue_work(simrupt_workqueue, &ai_work1);
+    else
+        queue_work(simrupt_workqueue, &ai_work2);
     tv_end = ktime_get();
 
     nsecs = (s64) ktime_to_ns(ktime_sub(tv_end, tv_start));
@@ -289,8 +258,6 @@ static void process_data(void)
     WARN_ON_ONCE(!irqs_disabled());
 
     pr_info("simrupt: [CPU#%d] produce data\n", smp_processor_id());
-    fast_buf_put(update_simrupt_data());
-
     pr_info("simrupt: [CPU#%d] scheduling tasklet\n", smp_processor_id());
     tasklet_schedule(&simrupt_tasklet);
 }
