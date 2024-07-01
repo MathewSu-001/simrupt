@@ -146,7 +146,7 @@ static void fast_buf_clear(void)
 
 static void ai_func1(struct work_struct *w)
 {
-    int move, cpu;
+    int move;
 
     /* This code runs from a kernel thread, so softirqs and hard-irqs must
      * be enabled.
@@ -157,15 +157,9 @@ static void ai_func1(struct work_struct *w)
     /* Pretend to simulate access to per-CPU data, disabling preemption
      * during the pr_info().
      */
-    // struct cpumask mask;
 
-    // cpumask_clear(&mask);
-    // cpumask_set_cpu(cpu_id, &mask);
-    // set_cpus_allowed_ptr(current, &mask);
-    cpu = get_cpu();
-    put_cpu();
-
-    pr_info("simrupt: [CPU#%d] is turn %s to play chess\n", cpu, __func__);
+    pr_info("simrupt: [CPU#%d] is turn %s to play chess\n", smp_processor_id(),
+            __func__);
 
     move = mcts(table, turn);
     smp_wmb();
@@ -182,7 +176,7 @@ static void ai_func1(struct work_struct *w)
 
 static void ai_func2(struct work_struct *w)
 {
-    int move, cpu;
+    int move;
 
     /* This code runs from a kernel thread, so softirqs and hard-irqs must
      * be enabled.
@@ -193,10 +187,9 @@ static void ai_func2(struct work_struct *w)
     /* Pretend to simulate access to per-CPU data, disabling preemption
      * during the pr_info().
      */
-    cpu = get_cpu();
-    put_cpu();
 
-    pr_info("simrupt: [CPU#%d] is turn %s to play chess\n", cpu, __func__);
+    pr_info("simrupt: [CPU#%d] is turn %s to play chess\n", smp_processor_id(),
+            __func__);
 
     move = negamax_predict(table, turn).move;
     smp_wmb();
@@ -237,11 +230,12 @@ static void simrupt_tasklet_func(unsigned long __data)
     WARN_ON_ONCE(!in_softirq());
 
     tv_start = ktime_get();
-    // queue_work(simrupt_workqueue, &work);
     if (turn == 'X')
-        queue_work(simrupt_workqueue, &ai_work1);
+        schedule_work_on(0, &ai_work1);
+    // queue_work_on(0, simrupt_workqueue, &ai_work1);
     else
-        queue_work(simrupt_workqueue, &ai_work2);
+        schedule_work_on(1, &ai_work2);
+    // queue_work_on(1, simrupt_workqueue, &ai_work2);
     tv_end = ktime_get();
 
     nsecs = (s64) ktime_to_ns(ktime_sub(tv_end, tv_start));
